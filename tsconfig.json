@@ -20,6 +20,6 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src"],
+  "include": ["src", "public/pcm16-worklet.js", "public/pcm-player-worklet.js", "types/**/*.d.ts" ],
   "references": [{ "path": "./tsconfig.node.json" }]
 }

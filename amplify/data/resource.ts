@@ -8,6 +8,9 @@ import { elevenLabHandler } from "../functions/elevenlab/resource";
 import { Token } from "aws-cdk-lib";
 import { speechToSpeech } from "@elevenlabs/elevenlabs-js/api";
 import { speechToTextHandler } from "../functions/speechToText/resource";
+import { submitPromptFunction } from "../functions/submit-prompt/resource";
+import { assemblyaiToken } from "../functions/assemblyToken/resource";
+import { replySuggester } from "../functions/chatSuggestion/resource";
 
 
 /*== STEP 1 ===============================================================
@@ -30,6 +33,8 @@ export const queryAIHandler = defineFunction({
   //   API_KEY: secret('MY_API_KEY'),
   // },
 });
+
+
 
 const schema = a.schema({
   Todo: a
@@ -109,36 +114,32 @@ const schema = a.schema({
     .authorization((allow) => allow.authenticated()),
 
       
-  generateRecipe: a.generation({
-    aiModel: a.ai.model("Claude 3.5 Haiku"),
-    systemPrompt: 'You are a helpful assistant that generates recipes.',
-  })
-  .arguments({
-    description: a.string(),
-  })
-  .returns(
-    a.customType({
-      name: a.string(),
-      ingredients: a.string().array(),
-      instructions: a.string(),
-    })
-  )
-  .authorization((allow) => allow.authenticated()),
+  // generatechat: a.generation({
+  //   aiModel: a.ai.model("Claude 3.5 Haiku"),
+  //   systemPrompt: 'You are a helpful assistant that generates chat response based on provided context.',
+  // })
+  // .arguments({
+  //   input: a.string(),
+  // })
+  // .returns(
+  //   a.string()
+  // )
+  // .authorization((allow) => allow.authenticated()),
 
-  chat: a.conversation({
-    aiModel: a.ai.model("Claude 3 Haiku"),
-    systemPrompt: "You are a helpful assistant that can answer questions about stories. When users ask questions, use the getInfo tool to provide detailed responses.",
-    // tools: [
-    //   a.ai.dataTool({
-    //     name: 'getInfo',
-    //     description: 'Use this tool to get detailed information and answers to user questions about stories. Pass the user question as the questions parameter.',
-    //     query: a.ref('queryAI'),
-    //   }),
-    // ]
+  // chat: a.conversation({
+  //   aiModel: a.ai.model("Claude 3 Haiku"),
+  //   systemPrompt: "You are a helpful assistant that can answer questions about stories. When users ask questions, use the getInfo tool to provide detailed responses.",
+  //   // tools: [
+  //   //   a.ai.dataTool({
+  //   //     name: 'getInfo',
+  //   //     description: 'Use this tool to get detailed information and answers to user questions about stories. Pass the user question as the questions parameter.',
+  //   //     query: a.ref('queryAI'),
+  //   //   }),
+  //   // ]
 
-    handler:chatHandler
-  })
-  .authorization((allow) => allow.owner()),
+  //   handler:chatHandler
+  // })
+  // .authorization((allow) => allow.owner()),
 
   getToken:a
   .query()
@@ -154,11 +155,107 @@ const schema = a.schema({
         sessionId: a.string().required(),
         mimeType: a.string().required(),
         chunkBase64: a.string().required(),
-        isFinal: a.boolean().default(false),
+        isFinal: a.boolean()
       })
       .returns(a.string())
       .authorization(allow => [allow.authenticated()])
       .handler(a.handler.function(speechToTextHandler)),
+
+        
+ knowledgeBase: a
+    .query()
+    .arguments({ input: a.string() })
+    .handler(
+      a.handler.custom({
+        dataSource: "KnowledgeBaseDataSource",
+        entry: "./resolvers/kbResolver.js",
+      }),
+    )
+    .returns(a.string())
+    .authorization((allow) => allow.authenticated()),
+
+  chat: a.conversation({
+    aiModel: a.ai.model("Claude 3 Haiku"),
+    systemPrompt: `You are a helpful assistant.`,
+    tools: [
+      a.ai.dataTool({
+        name: 'searchDocumentation',
+        description: 'Performs a similarity search over the documentation for ...',
+        query: a.ref('knowledgeBase'),
+      }),
+    ]
+  })
+  .authorization((allow) => allow.owner()),
+//-------------------------------------------------
+
+ RetrievalResultLocation: a.customType({
+    s3Location: a.customType({
+      uri: a.string()
+    }),
+    type: a.string(),
+    webLocation: a.customType({
+      url: a.string()
+    })
+  }),
+  RetrievedReferencesResponse: a.customType({
+    contenxt: a.customType({
+      text: a.string()
+    }),
+    location: a.ref('RetrievalResultLocation'),
+    metadata: a.string()
+  }),
+  GeneratedResponsePart: a.customType({
+    textResponsePart: a.customType({
+      span: a.customType({
+        end: a.integer(),
+        start: a.integer()
+      }),
+      text: a.string()
+    })
+  }),
+  CitationResponse: a.customType({
+    generatedResponsePart: a.ref('GeneratedResponsePart'),
+    retrievedReferences: a.ref('RetrievedReferencesResponse').array()
+  }),
+  PromptResponse: a.customType({
+    type: a.string(),
+    sessionId: a.string(),
+    systemMessageId: a.string(),
+    systemMessage: a.string(),
+    sourceAttributions: a.ref('CitationResponse').array()
+  }),
+  submitPrompt: a
+    .query()
+    .arguments({
+      userId: a.string().required(),
+      prompt: a.string(),
+      messageId: a.string(),
+      sessionId: a.string()
+    })
+    .returns(a.ref('PromptResponse'))
+    .handler(a.handler.function(submitPromptFunction))
+    .authorization(allow => [allow.authenticated()]),
+
+  generateToken:a.query()
+   .returns(a.string())
+    .authorization(allow=>[allow.authenticated(),allow.publicApiKey() ])
+    .handler(a.handler.function(assemblyaiToken)),
+
+
+    ReplySuggestions:a.customType({
+  suggestions: a.string().array().required(),
+}),
+     recommendReplies: a
+      .query()
+      .arguments({
+        chatId: a.string(),
+        currentUserId: a.string(),
+        numSuggestions: a.integer(),
+      })
+      .returns(a.ref('ReplySuggestions'))
+      .handler(a.handler.function(replySuggester))
+      .authorization(allow=>[allow.authenticated(),allow.publicApiKey()])
+  
       
 });
 

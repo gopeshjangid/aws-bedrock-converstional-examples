@@ -16,6 +16,10 @@ import { WebSocketLambdaIntegration } from 'aws-cdk-lib/aws-apigatewayv2-integra
 import { elevenLabHandler } from './functions/elevenlab/resource';
 import { aiToolHandler } from './functions/aiTool/resource';
 import { novaAIHandler } from './functions/novaAI/resource';
+import * as cdk from 'aws-cdk-lib';
+import { submitPromptFunction } from './functions/submit-prompt/resource';
+import { assemblyaiToken } from './functions/assemblyToken/resource';
+import { replySuggester } from './functions/chatSuggestion/resource';
 
 
 /**
@@ -32,8 +36,34 @@ const backend = defineBackend({
   queryAIHandler,
   elevenLabHandler,
   aiToolHandler,
-  novaAIHandler
+  novaAIHandler,
+  submitPromptFunction,
+  assemblyaiToken,
+  replySuggester
 });
+
+// const UserTable = backend.data.resources.tables['User'];
+// const MessageTable = backend.data.resources.tables['Message'];
+
+// function getTableOrThrow(name: string) {
+//   const tables = backend.data.resources.tables;
+//   const t = (tables as any)?.[name];
+//   if (!t) {
+//     throw new Error(
+//       `Table "${name}" not found. Available: ${
+//         tables ? Object.keys(tables).join(', ') : '(no tables on backend.data)'
+//       }. Check your model name and that "data" is included in defineBackend().`
+//     );
+//   }
+//   return t;
+// }
+
+// const UserTable = getTableOrThrow('User');                // must match your model name exactly
+// const MessageTable = getTableOrThrow('Message');
+
+// backend.replySuggester.addEnvironment('USER_TABLE_NAME', UserTable.tableName);
+// backend.replySuggester.addEnvironment('MESSAGE_TABLE_NAME', MessageTable.tableName);
+
 
 const askAIHandlerFn = backend.askAIHandler.resources.lambda;
 const speechHandlerfn = backend.speechHandler.resources.lambda;
@@ -48,6 +78,7 @@ const dynamoDbReadPolicy = new PolicyStatement({
   effect: Effect.ALLOW,
   actions: [
     'dynamodb:GetItem', // Allows reading a single item
+    'dynamodb:Query'
   ],
   // Replace 'YOUR_DYNAMODB_STORY_TABLE_NAME' with the actual name of your DynamoDB table
   // You can also reference the table if it's defined within your backend.ts
@@ -55,15 +86,36 @@ const dynamoDbReadPolicy = new PolicyStatement({
     "*"]
 });
 
+const policies=new PolicyStatement({
+  effect: Effect.ALLOW,
+  actions: [
+    'dynamodb:GetItem', // Allows reading a single item
+    'bedrock:InvokeModel',
+    'dynamodb:Query'
+  ],
+  // Replace 'YOUR_DYNAMODB_STORY_TABLE_NAME' with the actual name of your DynamoDB table
+  // You can also reference the table if it's defined within your backend.ts
+  resources: [
+    "*"]
+});
 // 2. Bedrock Invoke Model Policy
 const bedrockInvokePolicy = new PolicyStatement({
   effect: Effect.ALLOW,
   actions: [
     'bedrock:InvokeModelWithResponseStream', // Allows invoking Bedrock models
     'bedrock:InvokeModel',
+    'bedrock:DescribeKnowledgeBase',
+    'bedrock:ListKnowledgeBases',
+    'bedrock:Retrieve',
+    'bedrock:RetrieveAndGenerate',
+    'bedrock:RetrieveAndGenerateCommand',
+    'logs:CreateLogGroup',
+    'logs:CreateLogStream',
+    'logs:PutLogEvents'
   ],
   resources: ['*'], // Bedrock model invocation typically uses a wildcard resource
 });
+
 
 // Attach policies to the Lambda's execution role
 
@@ -76,7 +128,11 @@ chatHandlerFn.addToRolePolicy(dynamoDbReadPolicy);
 queryAIHandlerFn.addToRolePolicy(bedrockInvokePolicy);
 queryAIHandlerFn.addToRolePolicy(dynamoDbReadPolicy);
 novaaifn.addToRolePolicy(bedrockInvokePolicy)
+backend.submitPromptFunction.resources.lambda.addToRolePolicy(bedrockInvokePolicy)
+backend.replySuggester.resources.lambda.addToRolePolicy(policies)
 
+// backend.replySuggester.addEnvironment('USER_TABLE_NAME', UserTable.tableName);
+// backend.replySuggester.addEnvironment('MESSAGE_TABLE_NAME', MessageTable.tableName);
 // Add internet access policy for Hume AI WebSocket connections
 const internetAccessPolicy = new PolicyStatement({
   effect: Effect.ALLOW,
@@ -393,3 +449,24 @@ novaaifn.addToRolePolicy(new iam.PolicyStatement({
     `arn:aws:execute-api:${Stack.of(novaStack).region}:${Stack.of(novaStack).account}:${novaAIsocket.apiId}/*/@connections/*`
   ],
 }));
+
+const KnowledgeBaseDataSource =
+  backend.data.resources.graphqlApi.addHttpDataSource(
+    "KnowledgeBaseDataSource",
+    `https://bedrock-agent-runtime.ap-southeast-2.amazonaws.com`,
+    {
+      authorizationConfig: {
+        signingRegion: "ap-southeast-2",       // sign for KB region
+        signingServiceName: "bedrock",
+      },
+    },
+  );
+
+KnowledgeBaseDataSource.grantPrincipal.addToPrincipalPolicy(
+  new PolicyStatement({
+    resources: [
+      `arn:aws:bedrock:ap-southeast-2:137086856717:knowledge-base/EQSQRSNAQM`
+    ],
+    actions: ["bedrock:Retrieve"],
+  }),
+);
