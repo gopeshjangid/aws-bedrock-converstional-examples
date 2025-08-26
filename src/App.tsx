@@ -162,7 +162,7 @@ function App() {
     // </div>
 
      <Authenticator>
-      <ChatPage/>
+      <Convo/>
     </Authenticator>
   )
 }

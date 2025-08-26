@@ -123,7 +123,14 @@ export default function Convo() {
       return;
     }
 
-    const res = await chat.sendMessage(text);
+    const res = await chat.sendMessage({
+  content: [{ text: text }],
+  aiContext: {
+    user: {
+      userId: "81e3cd1a-e061-70ee-297e-5145cd4f6d78"
+    }
+  },
+});
     if (res.errors?.length) {
       console.error("sendMessage errors:", res.errors);
       setUiError(res.errors[0]?.message || "Send failed");

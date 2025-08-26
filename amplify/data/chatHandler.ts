@@ -1,130 +1,186 @@
-// amplify/functions/ChatDefaultConversationHandler/src/index.ts
 import {
   ConversationTurnEvent,
   createExecutableTool,
-  handleConversationTurnEvent
+  handleConversationTurnEvent,
+  type ToolResultContentBlock,
 } from '@aws-amplify/backend-ai/conversation/runtime';
+import { BedrockAgentRuntimeClient, RetrieveAndGenerateCommand } from '@aws-sdk/client-bedrock-agent-runtime';
 
-// Import necessary dependencies
-import { InvokeModelCommand, BedrockRuntimeClient } from '@aws-sdk/client-bedrock-runtime';
-import { DynamoDBClient, GetItemCommand } from '@aws-sdk/client-dynamodb';
-import { unmarshall } from '@aws-sdk/util-dynamodb';
-import { ElevenLabsClient } from '@elevenlabs/elevenlabs-js';
+type TavilyInput = {
+  query: string;
+  topK?: number;                          // default 6, max 50
+  depth?: 'basic' | 'advanced';           // Tavily search depth (default basic)
+  includeDomains?: string[];              // e.g. ["docs.aws.amazon.com","aws.amazon.com"]
+  excludeDomains?: string[];              // e.g. ["reddit.com"]
+};
 
-// Initialize AWS clients
-const region = process.env.AWS_REGION || 'ap-south-1';
-const bedrockRuntimeClient = new BedrockRuntimeClient({ region });
-const dynamodbClient = new DynamoDBClient({ region });
-const DYNAMODB_TABLE_NAME = process.env.DYNAMODB_TABLE_NAME || 'story-x5jlpv5xmbdjbpdrn326rfu7he-NONE';
-const elevenlabsApiKey = process.env.ELEVEN_LABS_API_KEY;
+const KB_REGION = 'ap-southeast-2';
+const KNOWLEDGE_BASE_ID = process.env.KNOWLEDGE_BASE_ID!||'SB77W32JWL';
+// const INFERENCE_PROFILE_ARN = process.env.INFERENCE_PROFILE_ARN;
+const MODEL_ID = "amazon.nova-lite-v1:0";
 
-const elevenlabs = new ElevenLabsClient({
-  apiKey: "sk_4787ce6d923c10ead6cd831592f6aa5351698457bd44840f"
-});
+const bedrockAgentRt = new BedrockAgentRuntimeClient({ region: KB_REGION });
 
-// 1. Define the JSON schema for your new tool.
-// This describes the input the AI will generate to call your tool.
-const getInfoSchema = {
-  json: {
-    type: 'object',
-    properties: {
-      questions: {
-        type: 'string',
-        description: 'The question to ask about the story.'
+const kbRagTool = createExecutableTool(
+  'kb_rag',
+  'Answers a question using the Knowledge Base with citations. Input: { query: string, topK?: number }',
+  {
+    json: {
+      type: 'object',
+      required: ['query'],
+      properties: {
+        query: { type: 'string' },
+        topK: { type: 'number', minimum: 1, maximum: 50 },
       },
-      storyId: {
-        type: 'string',
-        description: 'The ID of the story to query. Use the default ID "12345" if not specified.'
-      },
-    },
-    required: ['questions']
-  }
-} as const;
-
-// 2. Create the executable tool.
-const getInfoTool = createExecutableTool(
-  'getInfo',
-  'Answers questions about a specific story by searching its content.',
-  getInfoSchema,
-  async (input) => {
-    // This is the core logic from your old queryAIHandler.ts file.
-
-    console.log("input chathandler",input)
-    const { questions, storyId } = input;
-    const targetStoryId = storyId || "12345";
-
-    // --- 1. Fetch the story from DynamoDB ---
-    const getItemCommand = new GetItemCommand({
-      TableName: DYNAMODB_TABLE_NAME,
-      Key: {
-        id: { S: targetStoryId }
-      }
-    });
-    const dbResponse = await dynamodbClient.send(getItemCommand);
-     if (!dbResponse.Item) {
-      throw new Error(`Story with ID "${targetStoryId}" not found in table "${DYNAMODB_TABLE_NAME}".`);
-    }
-    const storyItem = unmarshall(dbResponse.Item);
-    const storyContent = storyItem.storyContent;
-
-    // --- 2. Construct prompt for Mistral ---
-    const prompt = `[INST]Given the following story, answer the question accurately and concisely.
-    Story:"""${storyContent}"""
-    Question: "${questions}"
-    Answer:[/INST]`;
-
-    // --- 3. Invoke Bedrock (Mistral model) to generate the answer ---
-    const cmd = new InvokeModelCommand({
-      modelId: 'mistral.mistral-7b-instruct-v0:2',
-      contentType: 'application/json',
-      accept: 'application/json',
-      body: JSON.stringify({ prompt: prompt, max_tokens: 400, temperature: 0.7 })
-    });
-    const { body } = await bedrockRuntimeClient.send(cmd);
-    const rawResponseBody = Buffer.from(body).toString('utf8');
-    const parsedRaw = JSON.parse(rawResponseBody);
-    const modelOutputText = parsedRaw.outputs?.[0]?.text ?? rawResponseBody;
-    
-    // --- 4. Return ONLY the text ---
-    // THIS IS THE CRITICAL CHANGE! We return a simple text object.
-    // The massive Base64 string is NOT included here.
-
-     let audioBase64 = "";
-    
-    
-      console.log('Starting ElevenLabs TTS conversion...');
-      
-      // Use a default voice ID (Rachel - a popular English voice)
-      const voiceId = '21m00Tcm4TlvDq8ikWAM'; // Rachel voice
-      
-      const audioStream = await elevenlabs.textToSpeech.convert(voiceId, {
-        modelId: 'eleven_multilingual_v2',
-        text: modelOutputText,
-        outputFormat: 'mp3_44100_128',
-        voiceSettings: {
-          stability: 0.5,
-          similarityBoost: 0.5,
-          useSpeakerBoost: true,
-          speed: 1.0,
-        },
-      });
-
-      // Convert stream to buffer
-      const chunks: Buffer[] = [];
-      for await (const chunk of audioStream) {
-        chunks.push(Buffer.from(chunk));
-      }
-      const audioBuffer = Buffer.concat(chunks);
-      audioBase64 = audioBuffer.toString('base64');
-      
-      console.log('Successfully generated Base64 encoded audio. Length:', audioBase64.length);
-    return Promise.resolve({ text: modelOutputText });
+    } as const,
   },
+  async (input): Promise<ToolResultContentBlock> => {
+
+    console.log("knowledgebase triggred")
+    // if (!KNOWLEDGE_BASE_ID) {
+    //   return { text: 'ERROR: KNOWLEDGE_BASE_ID not configured' };
+    // }
+
+     const modelArn = `arn:aws:bedrock:${KB_REGION}::foundation-model/${MODEL_ID}`;
+    const knowledgeBaseConfiguration: any = {
+      knowledgeBaseId: KNOWLEDGE_BASE_ID,
+      modelArn: modelArn,
+      retrievalConfiguration: { vectorSearchConfiguration: { numberOfResults: input.topK ?? 6 } },
+    };
+    //if (INFERENCE_PROFILE_ARN) knowledgeBaseConfiguration.modelArn = INFERENCE_PROFILE_ARN;
+
+   
+    //  if (MODEL_ID) knowledgeBaseConfiguration.modelArn = modelArn;
+  try{
+    const out = await bedrockAgentRt.send(
+      new RetrieveAndGenerateCommand({
+        input: { text: input.query },
+        
+        retrieveAndGenerateConfiguration: {
+          type: 'KNOWLEDGE_BASE',
+          
+          knowledgeBaseConfiguration,
+        },
+      })
+    );
+ 
+    console.log("KB out----->>",out)
+    const answer = out.output?.text ?? '';
+
+
+    console.log("KB_Citations---->",out.citations)
+    const citations =
+      out.citations?.flatMap((c) =>
+        c.retrievedReferences?.map((r) => (
+          r.location?.s3Location?.uri ??
+          r.location?.webLocation?.url ??
+          r.location?.type ??
+          'source'
+        )) ?? []
+      ) ?? [];
+
+    // const citationsList = citations.map((s, i) => `[${i + 1}] ${s}`).join('\n');
+    return  { json: { ok: true, source: 'kb', answer, citations } };
+  }
+  catch(err){
+    console.log("error from KB---->",err)
+    return{ json: { ok: false, source: 'kb', error:String(err) } };
+  }
+  }
+
+    
 );
 
-// 3. Update the main handler function to use the new tool.
+
+export const tavilySearchTool = createExecutableTool(
+  'tavily_search',
+  'Web search via Tavily. Input: { query, topK?, depth?, includeDomains?, excludeDomains? }',
+  {
+    json: {
+      type: 'object',
+      required: ['query'],
+      properties: {
+        query: { type: 'string', description: 'Search query string' },
+        topK: { type: 'number', minimum: 1, maximum: 50, description: 'Number of results (default 6)' },
+        depth: { type: 'string', enum: ['basic', 'advanced'], description: 'Search depth (default basic)' },
+        includeDomains: { type: 'array', items: { type: 'string' } },
+        excludeDomains: { type: 'array', items: { type: 'string' } },
+      },
+    } as const,
+  },
+  async (input: TavilyInput): Promise<ToolResultContentBlock> => {
+    try {
+      const API_KEY = process.env.TAVILY_API_KEY || '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';
+      if (!API_KEY) return { text: 'TAVILY error: TAVILY_API_KEY not set' };
+
+      const query = (input.query ?? '').trim();
+      if (!query) return { text: 'TAVILY error: empty query' };
+
+      const maxResultsEnv = Number(process.env.TAVILY_MAX_RESULTS ?? 6);
+      const maxResults = Math.max(1, Math.min(input.topK ?? maxResultsEnv, 50));
+      const timeoutMs = Number(process.env.TAVILY_TIMEOUT_MS ?? 8000);
+
+      const body = {
+        api_key: API_KEY,
+        query,
+        max_results: maxResults,
+        search_depth: input.depth ?? 'basic',
+        include_answer: true,
+        include_domains: input.includeDomains,
+        exclude_domains: input.excludeDomains,
+      };
+
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+      const resp = await fetch(
+        process.env.TAVILY_BASE_URL ?? 'https://api.tavily.com/search',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        }
+      );
+      
+      console.log("Response from tavily",resp)
+      clearTimeout(timer);
+
+      if (!resp.ok) {
+        const errText = await resp.text().catch(() => '');
+        console.log({ text: `TAVILY error: HTTP ${resp.status} ${errText.slice(0, 200)}` })
+        return { text: `TAVILY error: HTTP ${resp.status} ${errText.slice(0, 200)}` };
+      }
+
+      const data = await resp.json() as {
+        answer?: string;
+        results?: Array<{ title?: string; url?: string; content?: string }>;
+      };
+   
+      console.log("parsed data",data)
+      const results = (data.results ?? []).map(r => ({
+        title: r.title ?? '(no title)',
+        url: r.url ?? '',
+        snippet: r.content ?? '',
+      }));
+         
+
+      // Return structured JSON so the model can use it easily
+      return {
+        json: {
+          ok: true,
+          provider: 'tavily',
+          query,
+          answer: data.answer ?? '',
+          results,
+        },
+      } as ToolResultContentBlock;
+    } catch (e: any) {
+      console.log("tavily error",e)
+      return{ json: { ok: false, source: 'tavily', error: e?.message ?? String(e) } };
+    }
+  }
+);
 export const handler = async (event: ConversationTurnEvent) => {
-  await handleConversationTurnEvent(event, {
-    tools: [getInfoTool], // Add your custom tool here
-  });
+  await handleConversationTurnEvent(event, { tools: [kbRagTool,tavilySearchTool] });
 };

@@ -23,6 +23,7 @@
     "@types/aws-lambda": "^8.10.152",
     "aws-amplify": "^6.6.6",
     "aws-lambda": "^1.0.7",
+    "cheerio": "^1.1.0",
     "hume": "^0.12.1",
     "lodash-es": "^4.17.21",
     "lucide-react": "^0.536.0",

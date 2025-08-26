@@ -1,7 +1,9 @@
 export function request(ctx) {
   const { input } = ctx.args;
+
+  console.log("knowledge base triggred", ctx)
   return {
-    resourcePath: "/knowledgebases/EQSQRSNAQM/retrieve",
+    resourcePath: "/knowledgebases/SB77W32JWL/retrieve",
     method: "POST",
     params: {
       headers: {

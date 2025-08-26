@@ -1,6 +1,6 @@
 import { defineBackend } from '@aws-amplify/backend';
 import { auth } from './auth/resource';
-import {  chatHandler,queryAIHandler, data } from './data/resource';
+import {  chatHandler,queryAIHandler, data, getWeather, combinedHandler } from './data/resource';
 import { askAIHandler } from './functions/askAI/resource'; // Import the askAI function handler
 import { Fn, Stack } from 'aws-cdk-lib';
 import { PolicyStatement, Effect } from 'aws-cdk-lib/aws-iam';
@@ -20,6 +20,7 @@ import * as cdk from 'aws-cdk-lib';
 import { submitPromptFunction } from './functions/submit-prompt/resource';
 import { assemblyaiToken } from './functions/assemblyToken/resource';
 import { replySuggester } from './functions/chatSuggestion/resource';
+import * as appsync from "aws-cdk-lib/aws-appsync";
 
 
 /**
@@ -39,11 +40,13 @@ const backend = defineBackend({
   novaAIHandler,
   submitPromptFunction,
   assemblyaiToken,
-  replySuggester
+  replySuggester,
+  getWeather,
+  combinedHandler
 });
 
-// const UserTable = backend.data.resources.tables['User'];
-// const MessageTable = backend.data.resources.tables['Message'];
+const UserTable = backend.data.resources.tables['User'];
+const MessageTable = backend.data.resources.tables['Message'];
 
 // function getTableOrThrow(name: string) {
 //   const tables = backend.data.resources.tables;
@@ -465,8 +468,31 @@ const KnowledgeBaseDataSource =
 KnowledgeBaseDataSource.grantPrincipal.addToPrincipalPolicy(
   new PolicyStatement({
     resources: [
-      `arn:aws:bedrock:ap-southeast-2:137086856717:knowledge-base/EQSQRSNAQM`
+      `arn:aws:bedrock:ap-southeast-2:137086856717:knowledge-base/SB77W32JWL`
     ],
     actions: ["bedrock:Retrieve"],
   }),
 );
+// backend.getWeather.resources.lambda.addToRolePolicy(
+//   new PolicyStatement({
+//     resources: ["[resource arn]",],
+//     actions: ["[action]"],
+//   }),
+// )
+
+const api = backend.data.resources.graphqlApi; 
+
+const appsyncDdbRole = new iam.Role(api, "AppSyncDdbRole", {
+  assumedBy: new iam.ServicePrincipal("appsync.amazonaws.com"),
+  description: "Role AppSync uses to access DynamoDB tables",
+});
+
+// 2) Grant the role read/write to the table (+ GSIs)
+MessageTable.grantReadWriteData(appsyncDdbRole);
+
+// 3) Add a DynamoDB data source that uses this role
+// const messageDS = api.addDynamoDbDataSource("MessageDataSource", MessageTable, {
+//   name: "MessageDataSource",
+//   description: "AppSync to Message table",
+//   serviceRole: appsyncDdbRole,
+// });
